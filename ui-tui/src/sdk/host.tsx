@@ -215,14 +215,22 @@ export function ActiveWidgetSlot(): ReactNode {
 
 /** An in-FLOW dock row: reserves real rows in the chrome (never covers
  *  content), right-aligned cards. `dock-top` renders under the top status
- *  bar, `dock-bottom` above the bottom one. */
-export function AmbientDock({ placement }: { placement: 'dock-bottom' | 'dock-top' }): ReactNode {
+ *  bar, `dock-bottom` above the bottom one; `composer-bottom` is left-aligned beneath input. */
+export function AmbientDock({ placement }: { placement: 'composer-bottom' | 'dock-bottom' | 'dock-top' }): ReactNode {
   const overlay = useStore($overlayState)
   const ctx = useRenderCtx()
   const docked = overlay.ambient.filter(active => zoneOf(active) === placement)
 
   if (!docked.length) {
     return null
+  }
+
+  if (placement === 'composer-bottom') {
+    return (
+      <Box flexDirection="column" width="100%">
+        {docked.map(active => renderApp(active, ctx))}
+      </Box>
+    )
   }
 
   // paddingRight keeps card borders off the terminal's last column — an

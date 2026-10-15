@@ -53,6 +53,17 @@ def test_distinct_hook_failures_each_warn(manager, caplog):
     assert len(warnings) == 3
 
 
+def test_delegate_route_hook_failure_fails_closed(manager):
+    """A broken route resolver must not silently run the configured default model."""
+    def broken(**kwargs):
+        raise RuntimeError("quota lookup failed")
+
+    manager._hooks.setdefault("resolve_delegate_route", []).append(broken)
+    result = manager.invoke_hook("resolve_delegate_route", goal="plan", context="")
+    assert result and result[0]["action"] == "block"
+    assert "quota lookup failed" in result[0]["message"]
+
+
 def test_middleware_failure_warns_once_and_unload_forgets_it(manager, caplog):
     """Middleware runs once per tool call like a hook, so it dedupes the same way; a plugin
     reload (unload-all) forgets the reported failures so the reloaded callback's first failure

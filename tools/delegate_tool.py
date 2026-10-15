@@ -12,6 +12,7 @@ tool calls or reasoning.
 """
 
 import logging
+import subprocess
 import time
 import weakref
 from pathlib import Path
@@ -32,7 +33,7 @@ from tools.delegate_tool_config import (
     _DEFAULT_MAX_CONCURRENT_CHILDREN, _get_child_timeout, _get_max_async_children, _get_max_concurrent_children,
     _get_max_spawn_depth, _get_oneshot_max_children, _get_orchestrator_enabled, _get_subagent_approval_callback, _get_worktree_isolation,
     _inherit_parent_capabilities, _load_config, _merge_request_overrides, _resolve_child_credential_pool,
-    _resolve_child_runtime, _resolve_delegation_credentials,
+    _resolve_child_runtime, _resolve_delegation_credentials, _resolve_plugin_delegate_route,
     _subagent_auto_approve, _subagent_auto_deny,
 )
 from tools.delegate_tool_dispatch import _Batch, _announce_batch, _capture_origin, _run_batch
@@ -383,6 +384,34 @@ def _run_single_child(
 
         duration = run.elapsed()
         entry = _build_result_entry(child, result, task_index, duration, schema)
+        jev_route = getattr(child, "_jev_route", None)
+        if isinstance(jev_route, dict):
+            entry["jev_route"] = {key: jev_route.get(key) for key in
+                                  ("provider", "model", "reasoning_effort", "runner", "reason", "review")}
+        if isinstance(jev_route, dict) and isinstance(jev_route.get("review"), dict):
+            review_diff = ""
+            worktree_info = getattr(run, "worktree_info", None)
+            if isinstance(worktree_info, dict) and worktree_info.get("path") and worktree_info.get("base_commit"):
+                try:
+                    reviewed = subprocess.run(
+                        ["git", "-C", worktree_info["path"], "diff", "--no-ext-diff", "--no-textconv", worktree_info["base_commit"]],
+                        capture_output=True, text=True, timeout=30,
+                    )
+                    if reviewed.returncode == 0:
+                        review_diff = reviewed.stdout[:80000]
+                except (OSError, subprocess.TimeoutExpired):
+                    review_diff = "Could not collect the implementation diff from the child worktree."
+            try:
+                from hermes_cli.lifecycle import invoke_hook
+                review_results = invoke_hook(
+                    "post_delegate_child", goal=goal, context=getattr(child, "_jev_task_context", "") or "",
+                    result=entry, route=jev_route, review_diff=review_diff,
+                )
+                review_result = review_results[0].get("review") if review_results and isinstance(review_results[0], dict) else None
+                entry["reviews"] = [review_result if isinstance(review_result, dict) else
+                                    {"status": "failed", "error": "review hook returned no result"}]
+            except Exception as exc:
+                entry["reviews"] = [{"status": "failed", "error": f"review hook failed: {type(exc).__name__}"}]
         run.append_sibling_write_reminder(entry)
         run.account_background_processes(entry)
         run.emit_complete(result, entry, duration)
@@ -419,6 +448,37 @@ def _build_children(
     }
     children = []
     for i, t in enumerate(task_list):
+        try:
+            selected = _resolve_plugin_delegate_route(
+                t, default_provider=creds.get("provider"), default_model=creds.get("model"),
+                default_effort=routing_cfg.get("reasoning_effort"), parent_agent=parent_agent,
+            )
+        except ValueError as exc:
+            return [], str(exc)
+        child_creds = creds
+        child_routing_cfg = routing_cfg
+        if selected is not None:
+            child_routing_cfg = {
+                **routing_cfg, "provider": selected["provider"], "model": selected["model"],
+                "reasoning_effort": selected["reasoning_effort"] if selected["reasoning_effort"] is not None else False,
+                "base_url": None, "api_key": None, "api_mode": None,
+                "command": None, "args": [],
+            }
+            try:
+                child_creds = _resolve_delegation_credentials(child_routing_cfg, parent_agent)
+            except ValueError as exc:
+                return [], str(exc)
+        child_overrides = {
+            **overrides,
+            "override_provider": child_creds.get("provider"),
+            "override_base_url": child_creds.get("base_url"),
+            "override_api_key": child_creds.get("api_key"),
+            "override_api_mode": child_creds.get("api_mode"),
+            "override_request_overrides": child_creds.get("request_overrides"),
+            "override_acp_command": child_creds.get("command"),
+            "override_acp_args": child_creds.get("args"),
+            "routing_cfg": child_routing_cfg,
+        }
         _task_schema = task_schemas[i] if i < len(task_schemas) else None
         _child_context = t.get("context")
         if _task_schema is not None:
@@ -427,14 +487,26 @@ def _build_children(
             child = _build_child_preserving_parent_tools(
                 task_index=i, goal=t["goal"], context=_child_context,
                 toolsets=None,  # always inherit the parent's toolsets
-                model=creds["model"], max_iterations=max_iterations, task_count=len(task_list),
-                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
+                model=child_creds["model"], max_iterations=max_iterations, task_count=len(task_list),
+                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **child_overrides,
             )
         except ValueError as exc:
             return [], str(exc)
         if _task_schema is not None:
             with _quiet("Could not attach output schema to child %d", i):
                 child._delegate_output_schema = _task_schema
+        if selected is not None:
+            with _quiet("Could not attach Jev route metadata to child %d", i):
+                setattr(child, "_jev_route", selected)
+                setattr(child, "_jev_task_context", str(t.get("context") or ""))
+                classification = selected.get("classification") or {}
+                setattr(child, "_jev_worktree_isolation",
+                        selected.get("runner") == "routed_worker" and classification.get("work_type") == "implementation")
+                allowed_tools = selected.get("allowed_tools")
+                if isinstance(allowed_tools, list):
+                    parent_names = getattr(child, "valid_tool_names", None)
+                    if isinstance(parent_names, (list, tuple, set)):
+                        setattr(child, "valid_tool_names", [name for name in parent_names if name in set(allowed_tools)])
         # Validated per-task images; absent on image-less tasks, which keep the text-only goal turn.
         _t_images = task_images[i] if task_images and i < len(task_images) else None
         if _t_images:

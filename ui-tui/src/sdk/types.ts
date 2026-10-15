@@ -43,7 +43,7 @@ export interface WidgetApp<S = unknown> {
    * the same id again toggles it closed.
    */
   mode?: 'ambient' | 'modal'
-  /** Ambient placement — see AmbientZone. Default `dock-bottom`. */
+  /** Ambient placement — `composer-bottom` is directly beneath input. Default `dock-bottom`. */
   zone?: AmbientZone
   /** Card width in cells (ambient). Floats RESERVE this as a transcript
    *  rail, so match your Dialog width. Default 44. */
@@ -70,7 +70,7 @@ export interface WidgetApp<S = unknown> {
  * Users phrase placement loosely ("top right", "pin it above the status
  * bar") — map words to the nearest zone; corners mean floats.
  */
-export type AmbientZone = 'bottom-left' | 'bottom-right' | 'dock-bottom' | 'dock-top' | 'top-left' | 'top-right'
+export type AmbientZone = 'bottom-left' | 'bottom-right' | 'composer-bottom' | 'dock-bottom' | 'dock-top' | 'top-left' | 'top-right'
 
 /** The host's serializable record of the active app. */
 export interface ActiveWidget {

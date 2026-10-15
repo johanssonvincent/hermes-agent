@@ -381,12 +381,12 @@ def _register_child(
     })
     return _subagent_id
 
-def _create_isolated_worktree(parent_agent: Any, parent_task_id: Any, subagent_id: Optional[str]):
+def _create_isolated_worktree(parent_agent: Any, parent_task_id: Any, subagent_id: Optional[str], *, force: bool = False):
     """Opt-in worktree isolation: own git worktree off the parent's HEAD (the
     child's terminal starts there). Git-only, local-backend-only; failures
     degrade silently to the shared workspace. Returns the worktree info or None."""
     from tools.delegate_tool import _get_worktree_isolation, _resolve_workspace_hint
-    if not _get_worktree_isolation():
+    if not force and not _get_worktree_isolation():
         return None
     with _quiet("worktree isolation setup failed: %s"):
         from tools import subagent_worktree
@@ -758,7 +758,11 @@ class _ChildRun:
             record_session_cwd(self.child_task_id, get_session_cwd(self.parent_task_id))
             register_container_alias(self.child_task_id, self.parent_task_id)
 
-        self.worktree_info = _create_isolated_worktree(self.parent_agent, self.parent_task_id, self.subagent_id)
+        self.worktree_info = _create_isolated_worktree(
+            self.parent_agent, self.parent_task_id, self.subagent_id,
+            force=bool(getattr(self.child, "_jev_worktree_isolation", False)))
+        if getattr(self.child, "_jev_worktree_isolation", False) and self.worktree_info is None:
+            raise ValueError("Jev implementation requires an isolated worktree; setup failed, refusing shared-workspace execution")
         if self.worktree_info is not None:
             with _quiet("worktree cwd seed failed: %s"):
                 from tools.terminal_tool import record_session_cwd as _rsc

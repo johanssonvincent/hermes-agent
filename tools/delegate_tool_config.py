@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from utils import base_url_hostname, is_truthy_value
 from hermes_cli.fallback_config import scoped_fallback_chain
@@ -439,6 +440,69 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         )
     return _runtime_provider_credentials(values, explicit_request_overrides)
 
+
+def _resolve_plugin_delegate_route(task: dict[str, Any], *, default_provider: Optional[str],
+                                   default_model: Optional[str], default_effort: Any,
+                                   parent_agent: Any = None) -> Optional[dict[str, Any]]:
+    """Resolve a trusted plugin route for one normalized child; model arguments are never consulted."""
+    from hermes_cli.plugins import get_loaded_plugin_manager
+    home = None
+    parent_db = getattr(getattr(parent_agent, "_session_db", None), "db_path", None)
+    if isinstance(parent_db, (str, Path)):
+        home = Path(parent_db).parent
+    elif os.environ.get("HERMES_HOME"):
+        home = Path(os.environ["HERMES_HOME"])
+    if home is None:
+        return None
+    manager = get_loaded_plugin_manager(home=home)
+    if manager is None or not manager.has_hook("resolve_delegate_route"):
+        return None
+    decisions = manager.invoke_hook(
+        "resolve_delegate_route", goal=task.get("goal", ""), context=task.get("context") or "",
+        default_route={"provider": default_provider, "model": default_model, "reasoning_effort": default_effort},
+    )
+    if not decisions:
+        return None
+    if len(decisions) != 1 or not isinstance(decisions[0], dict):
+        raise ValueError("Delegation route hooks must return at most one route object.")
+    decision = decisions[0]
+    if decision.get("error"):
+        raise ValueError(str(decision["error"])[:500])
+    provider, model = decision.get("provider"), decision.get("model")
+    effort = decision.get("reasoning_effort")
+    if not isinstance(provider, str) or not provider.strip() or not isinstance(model, str) or not model.strip():
+        raise ValueError("Delegation route hook returned an invalid provider/model.")
+    if effort is not None and effort not in {"low", "medium", "high", "xhigh"}:
+        raise ValueError("Delegation route hook returned an invalid reasoning effort.")
+    if not isinstance(decision.get("reason", ""), str):
+        raise ValueError("Delegation route hook returned an invalid reason.")
+    result = {"provider": provider, "model": model, "reasoning_effort": effort,
+              "reason": decision.get("reason", "")[:300]}
+    runner = decision.get("runner")
+    if runner in {"subagent", "routed_worker"}:
+        result["runner"] = runner
+    review = decision.get("review")
+    if review is not None:
+        if not isinstance(review, dict) or not isinstance(review.get("provider"), str) or not isinstance(review.get("model"), str):
+            raise ValueError("Delegation route hook returned an invalid attached review route.")
+        if review.get("runner") not in {"routed_worker", "agy"}:
+            raise ValueError("Delegation route hook returned an unsupported attached reviewer.")
+        if review.get("reasoning_effort") is not None and review.get("reasoning_effort") not in {"low", "medium", "high", "xhigh"}:
+            raise ValueError("Delegation route hook returned an invalid review effort.")
+        result["review"] = review
+    classification = decision.get("classification")
+    if classification is not None:
+        if not isinstance(classification, dict) or classification.get("work_type") not in {"planning", "implementation", "research", "verification", "review"}:
+            raise ValueError("Delegation route hook returned an invalid classification.")
+        result["classification"] = classification
+    allowed_tools = decision.get("allowed_tools")
+    if allowed_tools is not None:
+        if (not isinstance(allowed_tools, list) or len(allowed_tools) > 256
+                or any(not isinstance(name, str) or not name for name in allowed_tools)):
+            raise ValueError("Delegation route hook returned an invalid allowed-tools list.")
+        result["allowed_tools"] = list(dict.fromkeys(allowed_tools))
+    return result
+
 def _load_config() -> dict:
     """The ``delegation`` config section (read-only — do NOT mutate). Prefers the shared ``load_config_readonly()``
     (follows HERMES_HOME/profile; no deepcopy, since this runs on every get_definitions() rebuild) over the legacy
@@ -568,7 +632,10 @@ def _resolve_child_runtime(
     # YAML ``false`` must disable thinking, not coerce to "" and inherit.
     child_reasoning = getattr(parent_agent, "reasoning_config", None)
     try:
-        delegation_effort = delegation_cfg.get("reasoning_effort")
+        delegation_effort = (
+            routing_cfg.get("reasoning_effort") if isinstance(routing_cfg, dict) and "reasoning_effort" in routing_cfg
+            else delegation_cfg.get("reasoning_effort")
+        )
         if delegation_effort or delegation_effort is False:
             from hermes_constants import parse_reasoning_effort
             parsed = parse_reasoning_effort(delegation_effort)

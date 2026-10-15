@@ -15,6 +15,32 @@ const key = (overrides: Partial<WidgetInput['key']> = {}, ch = ''): WidgetInput 
 beforeEach(() => resetOverlayState())
 
 describe('widget SDK host', () => {
+  it('renders a composer status line left-aligned below input without duplicating it in the dock', async () => {
+    const { defineWidgetApp } = await import('../sdk/registry.js')
+    const { AmbientDock } = await import('../sdk/host.js')
+    const { Box, Text } = await import('@hermes/ink')
+    const { createElement } = await import('react')
+    const { renderToScreen, scanPositions } = await import('../../packages/hermes-ink/src/ink/render-to-screen.js')
+    const { readFileSync } = await import('node:fs')
+    resetOverlayState()
+    defineWidgetApp({
+      id: 'composer-status-test', help: 'status test', mode: 'ambient', zone: 'composer-bottom',
+      init: () => ({}), reduce: state => state,
+      render: () => createElement(Text, { wrap: 'truncate-end' }, 'Jev · all sessions · 2 running')
+    })
+    launchWidget('composer-status-test')
+    const { screen, height } = renderToScreen(createElement(Box, { flexDirection: 'column' },
+      createElement(Text, null, '> input'),
+      createElement(AmbientDock, { placement: 'composer-bottom' }),
+      createElement(AmbientDock, { placement: 'dock-bottom' })), 60)
+
+    expect(height).toBe(2)
+    expect(scanPositions(screen, 'Jev')).toEqual([{ row: 1, col: 0, len: 3 }])
+    const layout = readFileSync(new URL('../components/appLayout.tsx', import.meta.url), 'utf8')
+    expect(layout.indexOf('<AmbientDock placement="composer-bottom" />')).toBeGreaterThan(layout.indexOf('<TextInput'))
+    expect(layout.indexOf('<AmbientDock placement="composer-bottom" />')).toBeLessThan(layout.indexOf('<AmbientDock placement="dock-bottom" />'))
+  })
+
   it('launch → dispatch → close lifecycle drives the overlay slot', () => {
     expect(launchWidget('grid-test', '5x2')).toBeNull()
     expect(getOverlayState().widget).toMatchObject({ appId: 'grid-test' })

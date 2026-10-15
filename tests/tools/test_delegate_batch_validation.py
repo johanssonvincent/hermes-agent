@@ -15,6 +15,7 @@ Inspired by: MoonshotAI/kimi-code agent-swarm.md validation rules (MIT)
 import json
 import threading
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from tools.delegate_tool import delegate_task
@@ -43,7 +44,12 @@ def _make_mock_parent(depth=0):
 
 
 def _call(tasks):
-    return json.loads(delegate_task(tasks=tasks, parent_agent=_make_mock_parent()))
+    # These are native schema/batch validation tests; Jev routing has its own
+    # integration tests and must not consult a developer's enabled plugins.
+    with patch("tools.delegate_tool._resolve_plugin_delegate_route", return_value=None), \
+         patch("tools.delegate_tool._build_child_preserving_parent_tools",
+               return_value=SimpleNamespace(tool_progress_callback=None)):
+        return json.loads(delegate_task(tasks=tasks, parent_agent=_make_mock_parent()))
 
 
 GOOD_A = "Refactor the login handler to use the new session helper"
@@ -168,7 +174,10 @@ class TestValidBatchStillRuns(unittest.TestCase):
     def test_single_goal_form_unaffected_by_batch_checks(self):
         # goal="test" is short — must NOT trip the batch-only length check.
         parent = _make_mock_parent()
-        with patch("tools.delegate_tool._run_single_child") as mock_run:
+        with patch("tools.delegate_tool._run_single_child") as mock_run, \
+             patch("tools.delegate_tool._resolve_plugin_delegate_route", return_value=None), \
+             patch("tools.delegate_tool._build_child_preserving_parent_tools",
+                   return_value=SimpleNamespace(tool_progress_callback=None)):
             mock_run.return_value = {
                 "task_index": 0, "status": "completed", "summary": "ok",
                 "api_calls": 1, "duration_seconds": 1.0, "_child_role": None,

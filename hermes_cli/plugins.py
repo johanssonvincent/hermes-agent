@@ -110,6 +110,9 @@ VALID_HOOKS: set[str] = {
     "pre_tool_call", "post_tool_call", "transform_terminal_output", "transform_tool_result",
     # transform_llm_output: return a replacement string (first non-None wins) or None.
     "transform_llm_output", "pre_llm_call", "post_llm_call",
+    # Per-child delegation policy. Trusted plugins may return a validated provider/model/effort
+    # override; model-facing delegate_task arguments never carry this routing metadata.
+    "resolve_delegate_route", "post_delegate_child",
     # Streaming observers (agent.plugin_stream_hooks), off the token path; payloads are immutable
     # normalized text/lifecycle and cannot transform the stream.
     "on_stream_start", "on_stream_delta", "on_stream_end", "on_interim_message",
@@ -205,7 +208,9 @@ VALID_HOOKS: set[str] = {
 
 # Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as
 # the shell-hook allow-list, so these are refused loudly instead of having output silently ignored.
-SHELL_UNSUPPORTED_HOOKS: set[str] = {"transform_api_error_classification"}
+SHELL_UNSUPPORTED_HOOKS: set[str] = {
+    "transform_api_error_classification", "resolve_delegate_route", "post_delegate_child",
+}
 
 _env_enabled = env_var_enabled  # imported by plugins/memory
 _UNSET = object()
@@ -1718,6 +1723,19 @@ def get_plugin_manager() -> PluginManager:
     _attach_published_gateway_host(manager)
     _attach_published_tui_host(manager)
     return manager
+
+
+def get_loaded_plugin_manager(home: Optional[str | Path] = None) -> Optional[PluginManager]:
+    """Return an already-loaded manager without resolving a home or triggering plugin discovery."""
+    if home is not None:
+        try:
+            return _plugin_managers_by_home.get(Path(home).expanduser().resolve())
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return None
+    if _plugin_manager is not None:
+        return _plugin_manager
+    managers = tuple(_plugin_managers_by_home.values())
+    return managers[0] if len(managers) == 1 else None
 
 
 def _reset_plugin_managers_for_tests() -> None:

@@ -490,6 +490,8 @@ const ComposerPane = memo(function ComposerPane({
         )}
       </Box>
 
+      <AmbientDock placement="composer-bottom" />
+
       {nativeMode && <FloatingOverlays {...floatingOverlayProps} nativeMode />}
 
       {nativeMode && composer.input === '?' && !composer.inputBuf.length && <HelpHint nativeMode t={ui.theme} />}
