@@ -180,7 +180,10 @@ export function useSubmission(opts: UseSubmissionOptions) {
   )
 
   const sendQueued = useCallback(
-    (text: string) => {
+    (queued: string | QueueItem) => {
+      const item = typeof queued === 'string' ? queueItem(queued) : queued
+      const text = item.tokens ? item.display : item.text
+
       if (text.startsWith('!')) {
         return shellExec(text.slice(1).trim())
       }
@@ -188,10 +191,12 @@ export function useSubmission(opts: UseSubmissionOptions) {
       if (hasInterpolation(text)) {
         patchUiState({ busy: true })
 
-        return interpolate(text, send)
+        return interpolate(text, resolved =>
+          send(prepareSubmission(resolved, item.tokens ?? []).text, true, resolved, value => value)
+        )
       }
 
-      send(text)
+      send(item.text, true, item.display, value => value)
     },
     [interpolate, send, shellExec]
   )
@@ -216,7 +221,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
         if (opts.fallbackToFront) {
           composerActions.prependQueue(item)
         } else {
-          composerActions.enqueue(item.text, item.display)
+          composerActions.enqueue(item.text, item.display, item.tokens)
         }
       }
 
@@ -247,13 +252,17 @@ export function useSubmission(opts: UseSubmissionOptions) {
       // the agent is in model generation, tool execution, or an older runtime.
       // Reuse the normal submit pipeline so the correction gets its user bubble
       // and file-drop interpolation exactly once.
-      send(item.text)
+      send(item.text, true, item.display, value => value)
     },
     [composerActions, gw, send, sys]
   )
 
   const dispatchSubmission = useCallback(
-    (full: string) => {
+    (full: string | QueueItem) => {
+      if (typeof full !== 'string') {
+        return getUiState().busy ? handleBusyInput(full) : sendQueued(full)
+      }
+
       if (!full.trim()) {
         return
       }
@@ -302,7 +311,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
       if (!live.sid) {
         composerActions.pushHistory(toHistory)
-        composerActions.enqueue(full)
+        composerActions.enqueue(submission.text, submission.display, submissionTokens)
         composerActions.clearIn()
 
         return
@@ -330,13 +339,13 @@ export function useSubmission(opts: UseSubmissionOptions) {
           return handleBusyInput(picked, { fallbackToFront: true })
         }
 
-        return sendQueued(picked.text)
+        return sendQueued(picked)
       }
 
       composerActions.pushHistory(toHistory)
 
       if (getUiState().busy) {
-        return handleBusyInput(queueItem(full))
+        return handleBusyInput(queueItem(submission.text, submission.display, submissionTokens))
       }
 
       if (shouldInterpolateSubmission(full)) {
@@ -393,7 +402,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
         }
 
         if (doubleTap && live.sid && composerRefs.queueRef.current.length) {
-          const next = composerActions.dequeue()
+          const next = composerActions.takeQueue(0)
 
           if (next) {
             composerActions.setQueueEdit(null)

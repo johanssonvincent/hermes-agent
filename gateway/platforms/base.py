@@ -1690,6 +1690,7 @@ class ExecApprovalPrompt:
     description: str
     smart_denied: bool
     metadata: Optional[dict[str, Any]] = None
+    command_is_display_summary: bool = False
 
     @property
     def choices(self) -> list[str]:
@@ -1919,6 +1920,7 @@ class BasePlatformAdapter(ABC):
     supports_code_blocks: bool = False
     # Typing indicator renders TEXT (status line); the gateway then feeds set_status_text().
     supports_status_text: bool = False
+    supports_approval_summary: bool = False
 
     def set_status_text(self, chat_id: str, text: Optional[str]) -> None:
         """Set or clear (``None``) the live working-state phrase for a chat. In-memory only: the
@@ -2891,7 +2893,7 @@ class BasePlatformAdapter(ABC):
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str, description: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None, allow_permanent: bool = True, allow_session: bool = True,
-        smart_denied: bool = False,
+        smart_denied: bool = False, command_is_display_summary: bool = False,
     ) -> SendResult:
         """Interactive exec-approval prompt; a press resolves via
         ``tools.approval.resolve_gateway_approval``. Text and choice set are shared; adapters
@@ -2903,7 +2905,8 @@ class BasePlatformAdapter(ABC):
             description=description, smart_denied=smart_denied,
             text=self._format_exec_approval(command, description, smart_denied),
             actions=self._exec_approval_actions(
-                allow_permanent=allow_permanent, allow_session=allow_session, smart_denied=smart_denied))
+                allow_permanent=allow_permanent, allow_session=allow_session, smart_denied=smart_denied),
+            command_is_display_summary=command_is_display_summary)
         return await self._send_exec_approval_prompt(prompt)
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:

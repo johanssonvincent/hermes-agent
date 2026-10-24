@@ -1,14 +1,20 @@
 import { useStore } from '@nanostores/react'
 import { useCallback, useMemo, useRef, useState } from 'react'
 
+import type { ComposerToken } from '../app/interfaces.js'
 import { $uiState, getUiState } from '../app/uiStore.js'
 
 export interface QueueItem {
   display: string
   text: string
+  tokens?: ComposerToken[]
 }
 
-export const queueItem = (text: string, display = text): QueueItem => ({ display, text })
+export const queueItem = (text: string, display = text, tokens?: ComposerToken[]): QueueItem => ({
+  display,
+  text,
+  ...(tokens?.length ? { tokens: [...tokens] } : {})
+})
 
 export function prependQueueItem(queue: QueueItem[], item: QueueItem): void {
   queue.unshift(item)
@@ -26,6 +32,7 @@ export function takeQueueItem(queue: QueueItem[], index: number, editedDisplay?:
   }
 
   return {
+    ...item,
     display: editedDisplay,
     text: editedDisplay.includes(item.display) ? editedDisplay.replace(item.display, item.text) : editedDisplay
   }
@@ -121,8 +128,8 @@ export function useQueue() {
   )
 
   const enqueue = useCallback(
-    (text: string, display = text) => {
-      queueRef.current.push(queueItem(text, display))
+    (text: string, display = text, tokens?: ComposerToken[]) => {
+      queueRef.current.push(queueItem(text, display, tokens))
       syncQueue()
     },
     [queueRef, syncQueue]

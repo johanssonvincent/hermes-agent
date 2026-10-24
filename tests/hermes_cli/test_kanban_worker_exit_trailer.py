@@ -144,3 +144,68 @@ def test_exit_single_query_writes_trailer_only_for_kanban_workers(monkeypatch, c
         exit_single_query(kb.KANBAN_RATE_LIMIT_EXIT_CODE)
     assert exc.value.code == kb.KANBAN_RATE_LIMIT_EXIT_CODE
     assert f"{KANBAN_WORKER_EXIT_TRAILER}{kb.KANBAN_RATE_LIMIT_EXIT_CODE}" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("boundary", [
+    "[kanban-worker-start] run=42",
+    "Query: work kanban task t_startup",
+])
+def test_startup_failure_does_not_inherit_prior_exit_or_response(monkeypatch, boundary):
+    raw = (
+        "old implementation response\nResume this session with:\n"
+        "  hermes --resume old\n[kanban-worker-exit] rc=0\n"
+        f"{boundary}\nInitializing agent...\nError: Unknown skill(s): sdlc-review\n"
+    )
+    monkeypatch.setattr(kb, "read_worker_log", lambda *a, **kw: raw)
+    assert kbd._worker_log_exit_code("t_startup") is None
+    output = kbd._worker_final_output("t_startup")
+    assert "Unknown skill(s): sdlc-review" in output
+    assert "old implementation response" not in output
+    assert "kanban-worker-start" not in output
+
+
+@pytest.mark.parametrize("rc", [0, 1, kb.KANBAN_RATE_LIMIT_EXIT_CODE])
+def test_current_attempt_exit_wins(monkeypatch, rc):
+    raw = (
+        "[kanban-worker-start] run=41\nold response\n[kanban-worker-exit] rc=0\n"
+        f"[kanban-worker-start] run=42\ncurrent response\n[kanban-worker-exit] rc={rc}\n"
+    )
+    monkeypatch.setattr(kb, "read_worker_log", lambda *a, **kw: raw)
+    assert kbd._worker_log_exit_code("t_current") == rc
+    assert kbd._worker_final_output("t_current") == "current response"
+
+
+def test_fresh_process_startup_failure_is_not_protocol_violation(kanban_home):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="startup failure", assignee="a")
+        _dead_worker_with_log(conn, tid, 72001, 0)
+        with kb.worker_log_path(tid).open("a") as f:
+            f.write("[kanban-worker-start] run=42\nError: Unknown skill(s): sdlc-review\n")
+        kbd.detect_crashed_workers(conn)
+        run = conn.execute(
+            "SELECT error, metadata FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()
+        assert "Unknown skill(s): sdlc-review" in run["error"]
+        assert "protocol violation" not in run["error"]
+        assert not kb._json_dict(run["metadata"]).get("protocol_violation")
+
+
+def test_spawn_flushes_run_boundary_before_startup(kanban_home, monkeypatch):
+    from types import SimpleNamespace
+    from tools.environments import local
+
+    monkeypatch.setattr(local, "_resolve_hermes_bin_dir", lambda: str(kanban_home / "bin"))
+    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="boundary", assignee="default")
+        task = kb.claim_task(conn, tid)
+        assert task is not None
+        log = kb.worker_log_path(tid)
+
+        def startup(*args, **kwargs):
+            assert f"[kanban-worker-start] run={task.current_run_id}" in log.read_text()
+            return SimpleNamespace(pid=73001)
+
+        monkeypatch.setattr(kbd.subprocess, "Popen", startup)
+        assert kbd._default_spawn(task, str(kanban_home)) == 73001

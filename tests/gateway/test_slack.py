@@ -5674,7 +5674,7 @@ class TestAgentSessionsApiRouting:
         a._app.client.agents_sessions_setStatus.assert_called_once_with(
             channel_id="C123",
             thread_ts="parent_ts",
-            status="is thinking...",
+            status="processing",
         )
         a._app.client.assistant_threads_setStatus.assert_not_called()
 
@@ -5691,9 +5691,27 @@ class TestAgentSessionsApiRouting:
         a._app.client.agents_sessions_setStatus.assert_called_once_with(
             channel_id="C123",
             thread_ts="parent_ts",
-            status="",
+            status="active",
         )
         a._app.client.assistant_threads_setStatus.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("text", ["is reading docs…", "still working… (2m03s)"])
+    async def test_custom_status_uses_processing_enum(self, text):
+        _slack_mod._AGENT_SESSIONS_SUPPORTED = True
+        a = self._adapter()
+        a.set_status_text("C123", text)
+        await a.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        a._app.client.agents_sessions_setStatus.assert_called_once_with(
+            channel_id="C123", thread_ts="parent_ts", status="processing")
+
+    @pytest.mark.asyncio
+    async def test_untracked_thread_can_be_cleared_after_restart(self):
+        _slack_mod._AGENT_SESSIONS_SUPPORTED = True
+        a = self._adapter()
+        await a.stop_typing("C123", metadata={"thread_id": "parent_ts"})
+        a._app.client.agents_sessions_setStatus.assert_called_once_with(
+            channel_id="C123", thread_ts="parent_ts", status="active")
 
     @pytest.mark.asyncio
     async def test_thread_title_uses_agents_sessions_rename(self):

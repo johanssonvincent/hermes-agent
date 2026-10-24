@@ -1457,6 +1457,7 @@ class TurnRunner:
         approvals (``send_exec_approval``) when available, else plain text with ``/approve`` steps."""
         from gateway.run import _approval_send_outcome, _format_exec_approval_fallback, _interim_metadata, _redact_approval_command
         from gateway.run_turn_runner_approval_settle import register_timeout_notice
+        from gateway.approval_display import prepare_approval_display
         ctx = self._ctx
         adapter = ctx._status_adapter
         # Slack's assistant_threads_setStatus disables the compose box, so the user can't type
@@ -1464,17 +1465,23 @@ class TurnRunner:
         # in approve/deny.
         adapter.pause_typing_for_chat(ctx._status_chat_id)
         self._close_native_stream_boundary("Approval")
-        # Redact credentials before display: the raw command string can carry secrets. Both the button and plain-text paths use this value.
-        cmd = _redact_approval_command(approval_data.get("command", ""))
-        desc = approval_data.get("description") or ea_default_reason_text()
+        # Slack approval cards must not expose raw operands; the execution and risk data stay untouched.
+        adapter_display = prepare_approval_display(type(adapter), approval_data)
+        if adapter_display is None:
+            # Redact credentials before display for every other messaging surface.
+            cmd = _redact_approval_command(approval_data.get("command", ""))
+            desc = approval_data.get("description") or ea_default_reason_text()
+        else:
+            cmd, desc = adapter_display.command, adapter_display.description
         flags = {k: approval_data.get(k, d) for k, d in (("allow_permanent", True), ("allow_session", True), ("smart_denied", False))}
+        display_flag = {"command_is_display_summary": True} if adapter_display is not None else {}
         # Check the *class*, not the instance — MagicMock auto-creates attributes in tests.
         if _renders_exec_approval_buttons(type(adapter)):
             try:
                 fut = self._schedule(
                     adapter.send_exec_approval(
                         chat_id=ctx._status_chat_id, command=cmd, session_key=ctx.session_key or "",
-                        description=desc, metadata=ctx._status_thread_metadata, **flags,
+                        description=desc, metadata=ctx._status_thread_metadata, **flags, **display_flag,
                     ),
                     "send_exec_approval scheduling error",
                 )

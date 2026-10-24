@@ -107,8 +107,11 @@ class TestSlackExecApproval:
         blocks = kwargs["blocks"]
         assert len(blocks) == 2
         assert blocks[0]["type"] == "section"
-        assert "rm -rf /important" in blocks[0]["text"]["text"]
-        assert "dangerous deletion" in blocks[0]["text"]["text"]
+        assert "rm — delete (recursive, forced) · target unknown · explicit sudo: no · args hidden" in blocks[0]["text"]["text"]
+        assert "dangerous deletion" not in blocks[0]["text"]["text"]
+        assert "rm -rf /important" not in blocks[0]["text"]["text"]
+        assert "rm -rf /important" not in kwargs["text"]
+        assert "Flagged by a Hermes safety rule." in blocks[0]["text"]["text"]
         assert blocks[1]["type"] == "actions"
         elements = blocks[1]["elements"]
         assert len(elements) == 4

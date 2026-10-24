@@ -263,19 +263,37 @@ _EXIT_TRAILER_RE = re.compile(
 )
 
 
+_WORKER_RUN_START_RE = re.compile(r"^\[kanban-worker-start\] run=\d+\s*$", re.MULTILINE)
+
+
+def _current_worker_log_attempt(raw: str) -> str:
+    """Do not attribute a previous attempt's exit or answer to its successor.
+
+    New workers leave a flushed boundary before startup (which itself can fail
+    before writing an exit trailer). Query headers also fence legacy logs.
+    """
+    starts = list(_WORKER_RUN_START_RE.finditer(raw))
+    if starts:
+        return raw[starts[-1].end():]
+    queries = list(re.finditer(r"^Query: work kanban task [^\r\n]+", raw, re.MULTILINE))
+    return raw[queries[-1].end():] if queries else raw
+
+
 def _worker_log_exit_code(task_id: str, board: Optional[str] = None) -> Optional[int]:
     """Exit code from the trailer the worker CLI wrote to its own log; None when absent.
 
     The durable twin of ``_recent_worker_exits``: written by the worker itself
     (``hermes_cli.quiet_single_query.exit_single_query``), so it is there whether
-    or not the process running this sweep ever reaped the worker. Last trailer
-    wins — the log is append-mode across re-runs.
+    or not the process running this sweep ever reaped the worker. Only trailers
+    from the latest attempt count; logs are append-mode across re-runs.
     """
     try:
         raw = _kb.read_worker_log(task_id, tail_bytes=4000, board=board)
     except Exception:
         return None
-    matches = _EXIT_TRAILER_RE.findall(raw or "")
+    # Only the current attempt may supply an exit code. Startup failures may
+    # leave no trailer at all; an older successful run is not evidence.
+    matches = _EXIT_TRAILER_RE.findall(_current_worker_log_attempt(raw or ""))
     return int(matches[-1]) if matches else None
 
 
@@ -1011,6 +1029,7 @@ def _worker_final_output(task_id: str, board: Optional[str] = None) -> str:
         return ""
     if not raw:
         return ""
+    raw = _current_worker_log_attempt(raw)
     raw = _EXIT_TRAILER_RE.sub("", raw)
     cut = raw.rfind(_exit_summary_marker())
     if cut != -1:
@@ -2945,6 +2964,11 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     from tools.process_registry import systemd_user_bus_env
     env = systemd_user_bus_env(env)
     log_f = _open_worker_log(task, board)
+    if task.current_run_id is not None:
+        # Flush before Popen: even a startup/import/skill failure belongs to
+        # this attempt, never to the previous successful worker's trailer.
+        log_f.write(f"\n[kanban-worker-start] run={task.current_run_id}\n".encode())
+        log_f.flush()
     try:
         proc = subprocess.Popen(
             cmd,

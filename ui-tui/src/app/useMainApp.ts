@@ -862,7 +862,7 @@ export function useMainApp(gw: GatewayClient) {
       return
     }
 
-    const next = composerActions.dequeue()
+    const next = composerActions.takeQueue(0)
 
     if (next) {
       patchUiState({ busy: true, status: 'running…' })

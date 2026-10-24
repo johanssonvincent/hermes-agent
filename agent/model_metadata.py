@@ -1918,12 +1918,11 @@ def _resolve_codex_oauth_context_length_with_source(model: str, access_token: st
     if not model_bare:
         return None, ""
     def _apply_verified_bump(ctx: int, source: str, catalog_max: Optional[int] = None) -> tuple[int, str]:
-        """Lift an EXACT stale 272K advertisement to the verified cap for opted-in ``-900k`` variants only,
-        never above the catalog's own ``max_context_window`` when it publishes one (#105443)."""
+        """Use the published maximum for opt-in variants; only infer a bump from the stale 272K default."""
         bumped = _verified_codex_ctx_for_slug(model_bare)
-        if bumped is not None and ctx == _CODEX_OAUTH_STALE_ADVERTISED_CTX:
+        if bumped is not None and (catalog_max is not None or ctx == _CODEX_OAUTH_STALE_ADVERTISED_CTX):
             bumped = min(bumped, catalog_max) if catalog_max else bumped
-            logger.debug("Codex OAuth context for %s: advertised %d raised to live-verified %d", model_bare, ctx, bumped)
+            logger.debug("Codex OAuth context for %s: advertised %d resolved to opt-in %d", model_bare, ctx, bumped)
             return bumped, source
         return ctx, source
     # The Codex catalog only knows the base slug (no -900k, no vendor/).
