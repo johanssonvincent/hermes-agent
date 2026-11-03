@@ -224,8 +224,32 @@ def row_turn_author(policy, row):
 
 
 async def execute_admission(authority, ref, row):
+    from tools.process_registry_notifications import live_notice_text
+    payload = row['payload']
+    descriptor = payload.get('local_automation_v1') or (payload.get('native_text_v1') or {}).get('automation') or {}
+    if 'notice_members' in descriptor:
+        try:
+            filtered = live_notice_text(payload.get('text', ''), descriptor['notice_members'])
+        except ValueError as exc:
+            from hermes_state_runtime import RuntimeStoreError
+            raise RuntimeStoreError('invalid_params') from exc
+        if filtered is None:
+            from hermes_state_runtime import RuntimeStoreError
+            raise RuntimeStoreError('temporarily_unavailable')
+        if not filtered:
+            authority.pending_results[row['admission_id']] = {
+                'result': {'final_response': '', 'messages': []}, 'usage': {}}
+            return ''
+        if filtered != payload.get('text', ''):
+            row = dict(row)
+            row['payload'] = dict(payload, text=filtered)
+            descriptor = dict(descriptor, display_text=filtered)
+            if 'local_automation_v1' in payload:
+                row['payload']['local_automation_v1'] = descriptor
+            else:
+                row['payload']['native_text_v1'] = dict(payload['native_text_v1'], automation=descriptor)
     from gateway.session_completion_notes import note_if_unviewed
-    noted = await note_if_unviewed(authority, ref, row)  # #134889 LC-7: no viewer, no turn
+    noted = await note_if_unviewed(authority, ref, row)
     if noted is not None:
         return noted
     from gateway.session_policy import policy_for_source

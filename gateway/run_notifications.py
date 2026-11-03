@@ -157,6 +157,9 @@ def _watch_notification_metadata(evt: dict, source) -> dict[str, Any]:
         metadata["gateway_session_id"] = parent_session_id
     if evt.get('_automation_identities'):
         metadata['automation_identities'] = evt['_automation_identities']
+    if "notice_members" in evt:
+        from tools.process_registry_notifications import validate_notice_members
+        metadata["notice_members"] = validate_notice_members(evt["notice_members"])
     if source.platform == Platform.LOCAL:
         # A local completion persists as the async-result card the in-process TUI wrote, and a tick
         # carries its CLI receipt; messaging rows stay internal_notification, as on main.
@@ -789,6 +792,14 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         self-post them as a new role=user prompt. Other watch events wake the session via self-post.
         """
         from gateway.wake import deliver_wake, persist_delegation_delivery
+        if "notice_members" in evt:
+            from tools.process_registry_notifications import live_notice_text
+            filtered = live_notice_text(synth_text, evt["notice_members"])
+            if filtered is None:
+                return False
+            if not filtered:
+                return True
+            synth_text = filtered
         scope = contextlib.nullcontext()
         if evt.get("type") == "async_delegation":
             info = "Async delegation completion — persisting delivery row for api_server session %s (no wake turn)"
@@ -908,8 +919,19 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             raw_sid = str(evt.get("origin_session_id") or "").strip() or str(source.chat_id or "")
             return await self._self_post_api_server(adapter, synth_text, raw_sid, evt)
         try:
+            if "notice_members" in evt:
+                from tools.process_registry_notifications import live_notice_text
+                filtered = live_notice_text(synth_text, evt["notice_members"])
+                if filtered is None:
+                    return False
+                if not filtered:
+                    return True
+                if filtered != synth_text:
+                    synth_text = _mark_internal_notification(filtered)
             synth_text = _mark_internal_notification(synth_text)
             metadata = _watch_notification_metadata(evt, source)
+            if "notice_members" in evt and "display_text" in metadata:
+                metadata["display_text"] = synth_text
             # The queued event's ``message_id`` is the message that STARTED the process, and the
             # persisted origin carries the same stale id. A synthetic completion is not a reply to
             # it: by delivery time the user has often continued elsewhere, and an event anchored
@@ -947,8 +969,44 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 except RuntimeStoreError as exc:
                     raise WakeNotAccepted(str(exc), reason=exc.reason) from exc
             else:
+                if "notice_members" in evt:
+                    from tools.process_registry_notifications import live_notice_text
+                    filtered = live_notice_text(str(synth_event.text), evt["notice_members"])
+                    if filtered is None:
+                        return False
+                    if not filtered:
+                        return True
+                    if filtered != synth_event.text:
+                        synth_event.text = _mark_internal_notification(filtered)
+                        if "display_text" in synth_event.metadata:
+                            synth_event.metadata["display_text"] = synth_event.text
+                session_key = None
+                active_sessions = None
+                if "notice_members" in evt:
+                    event_session_key = getattr(adapter, "_event_session_key", None)
+                    active_sessions = getattr(adapter, "_active_sessions", None)
+                    session_key = event_session_key(synth_event) if callable(event_session_key) else None
+                    if session_key is not None and session_key in (active_sessions or {}):
+                        return False
+                if "notice_members" in evt:
+                    from tools.process_registry_notifications import live_notice_text
+                    filtered = live_notice_text(str(synth_event.text), evt["notice_members"])
+                    if filtered is None:
+                        return False
+                    if not filtered:
+                        return True
+                    if filtered != synth_event.text:
+                        synth_event.text = _mark_internal_notification(filtered)
+                        if "display_text" in synth_event.metadata:
+                            synth_event.metadata["display_text"] = synth_event.text
+                if "notice_members" in evt:
+                    if session_key is not None and session_key in (active_sessions or {}):
+                        return False
                 await admit_internal_event(adapter, synth_event)
             return True
+        except ValueError as exc:
+            logger.warning("Dropping watch notification with invalid notice_members: %s", exc)
+            return None
         except WakeNotAccepted as exc:
             # Permanent only on proof: a pin the authority's state shows gone (/new, #141562) or a
             # final code. An unowned or foreign-pinned refusal may still find its owner (d6635ffe03b).
@@ -1584,6 +1642,12 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         await asyncio.sleep(3)  # let platforms finish connecting
         from tools.async_delegation import ORPHAN_SWEEP_INTERVAL_S
         from tools.process_registry import process_registry as _pr
+        import tools.process_registry as process_registry_module
+        drain_task = asyncio.current_task()
+        if drain_task is not None:
+            process_registry_module.register_gateway_completion_drain(self, drain_task)
+            drain_task.add_done_callback(
+                lambda task: process_registry_module.unregister_gateway_completion_drain(self, task))
         last_orphan_sweep = None
         while self._running:
             with _log_suppressed(logging.DEBUG, "Async delegation watcher error: %s"):

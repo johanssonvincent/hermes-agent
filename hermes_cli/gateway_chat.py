@@ -174,6 +174,7 @@ async def run_gateway_chat(args, emitter=None):
         title = continue_title(args)
         create_if_missing = bool(title and getattr(args, "create_if_missing", False))
         latest = wants_latest(args)
+        created_session = False
         if latest:
             snapshot = await _resume_latest(client, args)
             check_resume_policy(args, snapshot)
@@ -220,6 +221,7 @@ async def run_gateway_chat(args, emitter=None):
             if missing:
                 raise GatewayClientError("Gateway does not support creation options: " + ", ".join(missing))
             snapshot = await client.rpc("session.create", request_id=uuid.uuid4().hex, source=source, **policy)
+            created_session = True
             if (warning := (snapshot.get("info") or {}).get("config_warning")) and not isinstance(oneshot_prompt, str):
                 print(f"Warning: {warning}", file=sys.stderr)
         if not isinstance(oneshot_prompt, str):  # main's -z writes nothing to stderr on success
@@ -232,6 +234,7 @@ async def run_gateway_chat(args, emitter=None):
         view = GatewayChatView(client, snapshot, quiet=quiet, emitter=emitter,
                                usage_file=getattr(args, "usage_file", None))
         view.launch_api_key = getattr(args, "api_key", None)  # /new keeps this launch's key
+        view.created_session = created_session
         view.unattended = isinstance(oneshot_prompt, str)
         view.resume_footer = oneshot and not quiet
         if (getattr(args, "resume", None) or title or latest) and not quiet:

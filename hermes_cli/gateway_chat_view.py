@@ -40,6 +40,8 @@ class GatewayChatView:
         self.usage_file = usage_file
         self.client = client
         self.session_id = snapshot["stored_session_id"]
+        self.subscription_id = snapshot.get("subscription_id")
+        self.created_session = False
         self.generation = snapshot.get("execution_generation", 0)
         self.prompts = {p["prompt_id"]: p for p in snapshot.get("prompts", [])}
         self.pending = snapshot.get("pending", [])
@@ -150,6 +152,7 @@ class GatewayChatView:
                 return
             if self.session_id != sid:
                 return  # /new or /branch moved this view meanwhile
+            self.subscription_id = snapshot.get("subscription_id", self.subscription_id)
             self.generation = snapshot.get("execution_generation", self.generation)
             self.pending, prompts = snapshot.get("pending", self.pending), {p["prompt_id"]: p for p in snapshot.get("prompts", [])}
             for prompt_id in prompts.keys() - self.prompts.keys() if not self.finite else ():
@@ -393,6 +396,7 @@ class GatewayChatView:
     async def adopt(self, snapshot):
         """Attach this view to another session's snapshot (a branch, /new)."""
         self.session_id = snapshot['stored_session_id']
+        self.subscription_id = snapshot.get('subscription_id', self.subscription_id)
         self.generation = snapshot['execution_generation']
         self.prompts = {p['prompt_id']: p for p in snapshot.get('prompts', [])}
         self.pending = snapshot.get('pending', [])
@@ -486,6 +490,18 @@ class GatewayChatView:
         if self.unattended and exit_code == 1:
             print("hermes -z: no final response was produced; treating the run as failed.", file=sys.stderr)
 
+    async def _close_created_oneshot(self):
+        """Release only this invocation's created -z subscription after a completed turn."""
+        if (not self.unattended or not self.created_session or not self.subscription_id
+                or self.failure):
+            return
+        try:
+            async with asyncio.timeout(2):
+                await self.client.rpc("session.detach", session_id=self.session_id,
+                                      subscription_id=self.subscription_id, end_reason="cli_close")
+        except Exception as exc:
+            logger.debug("one-shot session detach ignored: %s", exc)
+
     def _write_usage_file(self, result, outcome):
         """``-z --usage-file``: the same JSON ledger the in-process one-shot wrote."""
         from hermes_cli.oneshot import _write_usage_file
@@ -544,6 +560,8 @@ class GatewayChatView:
                              else turn_exit_code(result, kanban_worker=False))
                 if self.usage_file:
                     self._write_usage_file(result, outcome)
+                if outcome == "completed":
+                    await self._close_created_oneshot()
                 if self.emitter is not None:
                     return self.emitter.emit_result({**result, "final_response": text,
                                                      "replay_gap": bool(terminal.get("replay_gap"))},

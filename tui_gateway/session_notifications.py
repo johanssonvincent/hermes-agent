@@ -5,6 +5,7 @@ desktop UI wiring, HUD surface note. Bodies are rebound onto server.py's globals
 from __future__ import annotations
 
 import contextlib
+import time
 
 from .method_ctx import bind_module
 
@@ -624,13 +625,30 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
         return True
     if evt_type == "completion" and registry.is_completion_consumed(evt.get("session_id", "")):
         return True
-    text = fmt(evt)
+    if "notice_members" in evt:
+        from tools.process_registry_notifications import live_notice_text
+        try:
+            notice_text = live_notice_text(fmt(evt), evt["notice_members"])
+        except ValueError as exc:
+            _notif_log_failure("invalid process notice member envelope", exc)
+            return True
+        if notice_text is None:
+            queue.put(evt)
+            if deferred is None:
+                time.sleep(0.25)
+                return True
+            return False
+        if not notice_text:
+            return True
+        text = notice_text
+    else:
+        text = fmt(evt)
     if not text:
         return True
     # Emit once per dedup key: a re-queued completion would otherwise re-emit every 0.5s while the session is busy,
     # while distinct watch_match events from one process must stay visible.
     dedup_key = _notification_event_dedup_key(evt)
-    if dedup_key not in emitted:
+    if dedup_key not in emitted and "notice_members" not in evt:
         from tools.process_registry_notifications import async_delegation_display_text, process_completion_display_text
         display_text = (async_delegation_display_text(evt) if is_delegation
                         else process_completion_display_text([evt]) if evt_type == "completion" else text)
@@ -652,6 +670,31 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
             return False
         time.sleep(0.25)  # back off: the re-queued event keeps the queue non-empty, else this loop spins at 100% CPU
         return True
+    if "notice_members" in evt:
+        from tools.process_registry_notifications import live_notice_text
+        try:
+            latest = live_notice_text(fmt(evt), evt["notice_members"])
+        except ValueError as exc:
+            _notif_log_failure("invalid process notice member envelope", exc)
+            _notif_release_turn(session)
+            return True
+        if latest is None:
+            _notif_release_turn(session)
+            queue.put(evt)
+            if deferred is None:
+                time.sleep(0.25)
+                return True
+            return False
+        if not latest:
+            _notif_release_turn(session)
+            return True
+        text = latest
+        if dedup_key not in emitted:
+            from gateway.warning_notifications import render_notification
+            emit = globals()["_emit"]
+            render_notification(lambda: emit("status.update", sid, {"kind": "process", "text": text}),
+                                platform="tui")
+            emitted.add(dedup_key)
     _notif_dispatch_event(sid, session, evt, text)
     return True
 

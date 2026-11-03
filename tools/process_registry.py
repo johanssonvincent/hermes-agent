@@ -664,6 +664,38 @@ _CHECKPOINT_DEFAULTS = {
 }
 
 
+_gateway_completion_drain_lock = threading.Lock()
+_gateway_completion_drain: tuple[Any, Any] | None = None
+
+
+def register_gateway_completion_drain(runner, task) -> None:
+    """Register the live process-local gateway queue consumer."""
+    global _gateway_completion_drain
+    with _gateway_completion_drain_lock:
+        _gateway_completion_drain = (runner, task)
+
+
+def unregister_gateway_completion_drain(runner, task) -> None:
+    global _gateway_completion_drain
+    with _gateway_completion_drain_lock:
+        if _gateway_completion_drain == (runner, task):
+            _gateway_completion_drain = None
+
+
+def gateway_completion_drain_active() -> bool:
+    with _gateway_completion_drain_lock:
+        registered = _gateway_completion_drain
+    if registered is None:
+        return False
+    runner, task = registered
+    try:
+        loop = task.get_loop()
+        return bool(runner._running and loop.is_running() and not task.done()
+                    and not task.cancelling())
+    except (AttributeError, RuntimeError):
+        return False
+
+
 _WSL_CHAIN_NOTE = (
     "Spawned via a wsl[.exe] launcher: the recorded host PID is the short-lived "
     "launcher, not the Linux-side workers. Inspect them with `wsl -e ps` / "

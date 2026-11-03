@@ -150,6 +150,46 @@ async def test_watch_notice_without_a_viewer_is_a_note(tmp_path, monkeypatch):
         authority.db.close()
 
 
+@pytest.mark.asyncio
+async def test_notice_returned_after_idle_admission_is_suppressed_behind_competing_turn(tmp_path, monkeypatch):
+    import asyncio
+    from gateway.platforms.event import MessageEvent
+
+    runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
+    marker = tmp_path / "returned.json"
+    live = authority.sessions[ref.session_id]
+    target = _target(runner, authority, ref)
+    _human(authority, ref, "human-race", "COMPETING")
+    event = MessageEvent(text="[IMPORTANT: result]" + chr(10) + "job result", source=live.source, internal=True, metadata={
+        "gateway_session_key": live.route, "gateway_session_id": target,
+        "notice_members": [{"job_id": "job-race", "marker_path": str(marker), "line": "job result"}],
+    })
+    await authority.admit_automation(runner._adapter_for_source(live.source), event, "race-notice")
+    started, release = asyncio.Event(), asyncio.Event()
+    seen = []
+
+    async def turn(input_event):
+        seen.append(input_event.text)
+        started.set()
+        await release.wait()
+        return "ok"
+
+    runner._handle_message = turn
+    try:
+        drain = asyncio.create_task(authority._drain(ref))
+        await asyncio.wait_for(started.wait(), 5)
+        marker.touch()
+        release.set()
+        await drain
+        assert seen == ["COMPETING"]
+        assert [row["outcome"] for row in _admissions(authority, ref)] == ["completed"]
+        assert _notes(authority, target) == []
+    finally:
+        if not release.is_set():
+            release.set()
+        authority.db.close()
+
+
 async def _restart(tmp_path, monkeypatch, old):
     """A real owner restart over the same state.db: new runner, new epoch, local sessions recovered."""
     from gateway.config import GatewayConfig
